@@ -1,5 +1,7 @@
 # Econometria das Séries Temporais - Parte 2: Intro a Modelos Multivariados
 
+RELATÓRIO: [Econometria das Séries de Tempo || VAR & VECM || Multivariados e Formas Estruturais](https://rpubs.com/Heitor_Mont/var_vecm)
+
 Exercícios de Séries Temporais seguindo:
 
  - Enders, W. (2014), Applied Econometric Time Series
