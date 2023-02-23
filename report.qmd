@@ -1,0 +1,1458 @@
+---
+title: "VAR e VECM no R: Como o preço internacional do petróleo afeta os preços domésticos?"
+author: "Heitor Gabriel Monteiro"
+date: "`r Sys.Date()`"
+always_allow_html: true
+fontfamily: serif
+fontsize: 13pt
+format:
+  html:
+   code-fold: show
+   code-tools: true
+   code-block-border-left: true
+   #code-line-numbers: true
+   html-math-method: katex
+   toc: true
+   toc-title: "Sumário"
+   number-sections: true
+   number-depth: 4
+   mainfont: Inter
+   monofont: JetBrains Mono
+   fontsize: 1.15em
+   linestretch: 1.1
+   theme:
+     light: cerulean
+     dark: cyborg
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(bslib)
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{css, echo=FALSE}
+.top-right {
+  position: fixed;
+  top: 1em;
+  right: 1em;
+}
+```
+
+# Os Modelos Temporais Multivariados
+
+Faz parte de todo grande projeto econômico saber de que forma alguns fatores podem influenciar sua variável de interesse. Por exemplo, como o preço da concorrência afeta na demanda de uma empresa? Como juros mais altos impactam no perfil de demanda por crédito? Uma excelente ferramenta teórica para trabalhar com essas relações empíricas de pressupostos teóricos, num contexto de séries de tempo, é a Análise Autorregressiva Vetorial Multivariada, com seus principais modelos sendo o VAR (Vetor Autorregressivo) e o VECM (Modelo Vetorial de Correção de Erros).   
+
+Diferentemente do [caso autorregressivo univariado ($AR(p)$),](https://heitorgabriel.github.io/time-series-modelling_1/) o VAR regride um conjunto de variáveis, explicando-as com suas próprias realizações passadas e, por ser um sistema, com os valores atuais e passados das demais variáveis do conjunto. Tomando como exemplo um caso bivariado de ordem 1 $(p=1)$:   
+
+$$
+\begin{Bmatrix}
+y_{t} = b_{10} + a_{12}z_{t} + b_{11}z_{t-1} + b_{12}y_{t-1} + \sigma_{y}\epsilon_{y,t} \\
+z_{t} = b_{20} + a_{22}y_{t} + b_{21}z_{t-1} + b_{22}y_{t-1} + \sigma_{z}\epsilon_{z,t}   
+\end{Bmatrix}
+$$   
+
+$$
+\begin{Bmatrix}
+-a_{12}z_{t} + y_{t} = b_{10} + b_{11}z_{t-1} + b_{12}y_{t-1} + \sigma_{y}\epsilon_{y,t} \\
++z_{t} - a_{22}y_{t} = b_{20} + b_{21}z_{t-1} + b_{22}y_{t-1} + \sigma_{z}\epsilon_{z,t}   
+\end{Bmatrix}
+$$   
+
+$$
+\begin{bmatrix}
+-a_{12} & 1 \\ 
+1 & -a_{22}
+\end{bmatrix}
+\begin{bmatrix}
+z_{t} \\ y_{t}
+\end{bmatrix}
+ =
+\begin{bmatrix}
+b_{10} \\ b_{20}
+\end{bmatrix}
+ +
+\begin{bmatrix}
+b_{11} & b_{12} \\
+b_{21} & b_{22}
+\end{bmatrix}
+\begin{bmatrix}
+z_{t-1} \\ y_{t-1}
+\end{bmatrix}
++
+\begin{bmatrix}
+\sigma_{z} & 0 \\
+0 & \sigma_{y}
+\end{bmatrix}
+\begin{bmatrix}
+\epsilon_{z,t}  \\ \epsilon_{y,t}
+\end{bmatrix}
+$$   
+Dando nomes às matrizes formadas, respectivamente:
+
+$$
+AX_{t} = B_{0} + B_{1}X_{t-1} + B_{\sigma}\epsilon_{t}
+$$
+
+Nesse formato, chamado *estrutural*, assumimos que $(y_t, z_t)$ são estacionárias; que a sequência de erros são ruídos brancos, não-correlacionados entre si e com $(\sigma_{y}, \sigma_{z})$ sendo seus desvios-padrão. O problema é que essa forma não pode ser estimada diretamente via MQO porque uma variável tem efeito contemporâneo na outra (efeito feedback), ou seja, $(z_{t}, y_{t})$ é afetado por $(\epsilon_{y,t}, \epsilon_{z,t})$, respectivamente. Ainda estamos interessados nos choques estruturais, mas, para a estimação, devemos calculá-lo no *formato reduzido*:
+
+$$
+X_{t} = A^{-1}B_{0} + A^{-1}B_{1}X_{t-1} + A^{-1}B_{\sigma}\epsilon_{t}
+$$
+
+Com $\Phi_{0} = A^{-1}B_{0}$, $\Phi_{1} = A^{-1}B_{1}$ e $e_{t} = A^{-1}B_{\sigma}\epsilon_{t}$ temos:
+
+$$
+X_{t} = \Phi_{0} + \Phi_{1} X_{t-1} + e_{t}
+$$
+
+Nesse formato, os erros transformados não são mais correlacionados aos regressores, permanecem não-autocorrelacionados, mas são correlacionados contemporâneamente entre si:
+
+$$
+\begin{bmatrix}
+e_{1,t} \\ e_{2,t}
+\end{bmatrix}
+ \equiv
+A^{-1}B_{\sigma}\epsilon_{t}
+ =
+\begin{bmatrix}
+\frac{\sigma_{y}\epsilon_{y,t} - a_{12}\sigma_{z}\epsilon_{z,t}}{1 - a_{12}a_{21}}
+\\
+\frac{\sigma_{z}\epsilon_{z,t} - a_{21}\sigma_{y}\epsilon_{y,t}}{1 - a_{12}a_{21}}
+\end{bmatrix}
+$$
+
+Estabelecer restrições à forma reduzida para voltar aos choques estruturais é o cerne da modelagem VAR e VECM.   
+
+Os modelos VECM podem ser descritos como a consideração de que as variáveis não-estacionárias têm uma relação estável, ou seja, alguma transformação linear entre elas que seja estacionária. Nesse comportamento, há uma correção de desvios dessa relação, no curto-prazo. De forma bem sucinta, o caso na forma reduzida, bivariado e de ordem 2 é:
+
+$$
+\begin{Bmatrix}
+\Delta y_{t} = b_{10} + a_{12}( \alpha + y_{t-1} + \beta z_{t-1}) + b_{11}\Delta z_{t-1} + b_{12}\Delta y_{t-1} + u_{y,t} \\
+\Delta z_{t} = b_{20} - a_{22}( \alpha + y_{t-1} + \beta z_{t-1}) + b_{21}\Delta z_{t-1} + b_{22}\Delta y_{t-1} + u_{z,t}   
+\end{Bmatrix}
+$$
+Onde $(a_{12},a_{22})$ é a velocidade de ajuste dos desvios da relação estacionária de longo-prazo $\alpha + y_{t-1} + \beta z_{t-1}$. Para testar cointegração das variáveis, procedemos com o Teste de Johansen.   
+
+Com as restrições que impormos ao modelo, podemos chegar à sua forma estrutural e realizar análises impulso-resposta e decomposição da variância. A função impulso-resposta mostra o impacto de um choque de $\epsilon_{z,t}$ em $z_{t+h}$, com $h=(1,2,...)$. E a decomposição da variância diz qual que porcentagem da variância do erro de previsão decorre  de cada variável endógena, ao longo do horizonte de previsão.
+
+# Objetivo e Ferramentas
+
+Nesse exercício, vamos calcular as relações entre:
+
+1.  preço internacional do petróleo;
+2.  câmbio e
+3.  índice nacional de preços
+
+para responder à pergunta: **Qual impacto do aumento do preço internacional do petróleo nos preços domésticos?** A ideia é que o preço no mercado internacional do petróleo tem poder suficiente para afetar não somente o preço doméstico dos combustíveis, portanto, dos transportes, mas também de todas cadeias produtivas que usam a energia fóssil, como o gás de cozinha (GLP) para alimentação. O preço internacional do petróleo pode afetar a economia local através do seu valor convertido para o Real, que é o valor que os agentes olharão para decidir suas alocações de insumos e produção. Uma ideia *a priori* é que os nossos preços e o câmbio não têm capacidade de influenciar o preço internacional do petróleo, parece ser bem razoável e o testaremos com Granger-causalidade e pela significância dos coeficientes. Também é provável que a política nacional de atualização de preços dos combustíveis possa *sujar* essa relação que estimaremos. Outro pessuporto que precisamos adotar, portanto, é que, ao olhar para o preço internacional do petróleo, os agentes preverão uma variação do preço doméstico, que acontecerá cedo ou tarde, e anteciparão a atualização. Portanto, de forma mais técnica, o que testaremos é o efeito, nos preços domésticos, da influência esperada do preço internacional do petróleo.   
+
+Vamos conhecer o comportamento dessas variáveis; calcular modelos VAR; diagnosticar os resíduos para examinar a qualidade dessas relações; testar cointegração, para ver se é necessário usar um VECM como alternativa; modelar a versão Estrutural do VAR ou do VECM e usar algumas firulas do instrumental: o Impulso-Resposta e a Decomposição da Variância. Uma análise subsequente ao VECM seria o de assimetria no vetor de correção de erros: as respostas a desvios positivos são mais rápidas que as respostas a desvios negativos, simularemos também essa restrição.
+
+Usaremos os sequintes pacotes do R:
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)	# manipulação e visualizações básicas
+library(plotly)		# visualizações interativas
+library(ggpubr)		# diversidade de configurações de visualização
+library(kableExtra)  # tabelas
+# tidyverts core:	pacotes para séries temporais univariadas
+library(tsibble)
+library(fable)
+library(feasts)
+# tidyverts improvements tools
+library(tsibbletalk)
+library(fable.prophet)
+library(fabletools)
+# Multivariáveis:	pacotes para séries temporais multivariadas
+library(vars)
+library(tsDyn)
+```
+
+Recomendo fortemente passear pela documentação do conjunto de pacotes [Tidyverts](https://tidyverts.org/), ler as definições na documentação do [vars](https://www.pfaffikus.de/rpacks/vars/files/vignette-vars.pdf), do [tsDyn](https://rdrr.io/cran/tsDyn/f/inst/doc/ThCointOverview.pdf) e do [svar](https://www.jstatsoft.org/article/view/v097i05).
+
+# Dados Brutos e Tratamentos
+
+Para o preço internacional do petróleo, usaremos a média simples dos preços médios mensais, em dólar, dos três principais mercados da commodity: Dated Brent, Dubai Fateh e West Texas Intermediate. Para a taxa de câmbio, usaremos a taxa (R\$ / US\$) comercial de compra média para o mês. E para os preços nacionais, usaremos o índice histórico do IPCA (Tabela 1737).
+
+Para facilitar a criação de tabelas, criaremos uma função:
+
+```{r}
+set_tab <- function(dados_tab, cap_tab){
+    kable( x = dados_tab,
+        booktabs = TRUE,
+          escape   = FALSE,
+          digits   = 4,
+          caption  = cap_tab) |> 
+  kable_styling(latex_options =
+                c("striped", "hold_position"),
+                position      = "center",
+                full_width    = F,
+                bootstrap_options =
+                   c("striped", "hover", "condensed", "responsive"))
+} 
+```
+
+
+Vamos importar os dados e fazer uns tratmentos:
+
+```{r, message=FALSE, warning=FALSE}
+dds <- read_csv("dds.csv")
+dds |> glimpse()
+
+# Retirar NA's
+dds <- dds |> filter(!is.na(petro)) 
+
+# Substituir vírgula por ponto e reconhecer a variável numérica
+dds$cambio <- dds$cambio |>
+	str_replace(pattern = ",", replacement = ".") |>
+	as.numeric() 
+
+# Criar uma variável de tempo chamada "dt" na base
+dds$dt <- seq(from = lubridate::ym('1990 Jan'),
+				  to   = lubridate::ym('2022 Jul'), # alternativa: length=
+				  by   = "month")
+
+# Criar os logaritmos naturais
+dds <- dds |> mutate("ptr_br_log"      = log(cambio) + log(petro),
+							"ipca_log"        = log(ipca),
+							"petro_log"       = log(petro),
+							"cambio_log"      = log(cambio),
+							"petro_brent_log" = log(petro_brent),
+							"petro_dubai_log" = log(petro_dubai),
+							"petro_texas_log" = log(petro_texas))
+
+dds |> glimpse()
+
+# Permanecer somente com a data Julho de 1994 pra lá...
+dds <- dds |> filter(dt >= lubridate::ym("1994 Jul"))
+
+# Criar uma base tsibble
+dd <- dds |>
+	dplyr::select(dt, ptr_br_log, ipca_log, cambio_log, petro_log) |> 
+	dplyr::mutate(dt = tsibble::yearmonth(as.character(dt))) |>
+	as_tsibble(index = dt)
+
+# Verificar o intervalo do tsibble
+dd |> interval()
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+plt_cambio <- plot_ly(dds,type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~dt, y = ~cambio,
+				 name = "Câmbio",
+				 line = list(color = "#30d5c8", width = 2)) |> 
+	layout(showlegend = F,
+			 title='Taxa de Câmbio - R$/US$ - Comercial - Compra - Média - R$ ',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "R$/US$",
+			 				 zerolinecolor = '#ffff',
+                      zerolinewidth = 2,
+                      gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_cambio
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+plt_ipca <- plot_ly(dds,type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~dt, y = ~ipca,
+				 name = "IPCA",
+				 line = list(color = "#551a8b", width = 2)) |> 
+	layout(showlegend = F,
+			 title='índice de Preços ao Consumidor Amplo - IPCA, Brasil, de Jan/90 a Jul/2022.',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "Índice",
+			 				 zerolinecolor = '#ffff',
+                      zerolinewidth = 2,
+                      gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_ipca
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+plt_petro <- plot_ly(dds,type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~dt, y = ~petro,
+				 name = "Petroleum",
+				 line = list(color = "#2E8B57", width = 2)) |> 
+	layout(showlegend = F,
+			 title='Média do Preço Internacional do Petróleo',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "Preço em Dólar",
+			 				 zerolinecolor = '#ffff',
+                      zerolinewidth = 2,
+                      gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_petro
+```
+
+Vamos também considerar o **preço nacional do petróleo**, que é o preço no mercado internacional convertido em reais pela taxa de câmbio apresentada:
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+plt_petro_n <- plot_ly(dds,type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~dt, y = ~petro*cambio,
+				 name = "Petroleum (R$)",
+				 line = list(color = "#073320", width = 2)) |> 
+	layout(showlegend = F,
+			 title='Média do Preço Internacional do Petróleo, em Reais',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "Preço em Reais",
+			 				 zerolinecolor = '#ffff',
+                      zerolinewidth = 2,
+                      gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_petro_n
+```
+
+Conseguimos visualizar o regime brasileiro de câmbio fixo até o fim de 1998. O rápido crescimento do preço do petróleo em 2007 ocorreu por aumento da demanda mundial e estagnação da produção, enquanto que a queda observada a partir de julho de 2008 foi causada pela crise financeira na bolha imobiliária dos EUA^[[JAMES D. HAMILTON - Causes and Consequences of the Oil Shock of 2007–08.](https://www.brookings.edu/wp-content/uploads/2016/07/2009a_bpea_hamilton-1.pdf)]. A queda do preço internacional na metade de 2014 foi causada pela rápida expansão na produção norte-americana e mudanças na política de preços da OPEC^[[World Bank - What triggered the oil price plunge of 2014-2016 and why it failed to deliver an economic impetus in eight charts. ](https://blogs.worldbank.org/developmenttalk/what-triggered-oil-price-plunge-2014-2016-and-why-it-failed-deliver-economic-impetus-eight-charts)]. Percebemos também a mudança na tendência dos preços do petróleo e do IPCA a partir de abril de 2020, momento que a COVID-19 já se tornara pandêmica.
+
+A fins didáticos, faremos uma decomposição multiplicativa do logaritmo preço nacional do petróleo, é possível perceber melhor a tendência, a sazonalidade e os choques:
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+dd |> 
+	dplyr::select(ptr_br_log, dt) |>
+	model(classical_decomposition(
+		ptr_br_log,
+		type = "multiplicative")) |>
+	components() |>
+	autoplot() |> 
+	plotly_build() |> 
+	layout(title = htmltools::HTML("Decomposição Multiplicativa Clássica:\npetro_br_log = trend * seasonal * randon"))
+```
+
+
+# Raíz Unitária com KPSS e PP {.tabset .tabset-fade .tabset-pills}
+
+Visualmente, percebemos tendência temporal no IPCA e um passeio aleatório nas demais variáveis, Petro e Câmbio. Faremos o teste de raíz unitária de Phillips-Perron e estacionaridade ao entorno de uma tendência de Kwiatkowski-Phillips-Schmidt-Shin (KPSS) para validar nossa intuição visual. Resumidamente, as raízes do polinômio real de operadores de defasagem devem estar dentro do ciclo unitário para que o processo $AR(.)$ seja estacionário e para que o processo $MA(.)$ seja invertível. Caso seja detectado raíz fora do ciclo, teremos que remover a tendência, diferenciando a série. Usaremos o teste PP para raíz unitária por ser robusto, se comparado a Dickey-Fuller (DF) na presença de tendência temporal, intercepto e correlação serial nos erros e o teste KPSS para estacionariedade pelo baixo poder do DF na presença de médias móveis perto do círculo unitário.
+
+A hipótese nula do KPSS é do processo ser estacionário ao entorno de uma tendência determinística, simplificamos com $H_0: y_t \tilde{} I(0)$ enquanto que a do PP é de raíz unitária. Então, para confirmarmos nossa intuição, o p-valor de um deve ser baixo e do outro deve ser alto.
+
+```{r message=FALSE, warning=FALSE}
+dplyr::bind_rows(
+list(
+	dd |> features( ptr_br_log, c(unitroot_kpss, unitroot_pp)),
+   dd |> features( ipca_log, c(unitroot_kpss, unitroot_pp)),
+   dd |> features( petro_log, c(unitroot_kpss, unitroot_pp)),
+   dd |> features( cambio_log, c(unitroot_kpss, unitroot_pp))  )) |>
+	bind_cols("Variável" =c("Log Petro Br", "Log IPCA", "Log Petro", "Log Câmbio")) |> 
+	dplyr::select(Variável, 1:4) |> set_tab(cap_tab = "Resultado do KPSS e PP")
+```
+
+Portanto, rejeitamos a hipótese nula do KPSS de estacionariedade ao entorno de uma tendência determinística a favor da hipótese alternativa de raíz unitária para todas as variáveis, a 5% de significância. Aceitamos a nula do teste PP de integração de primeira ordem, ou seja, uma raíz unitária, a 5%, para todas as variáveis **exceto** para o IPCA. As confirmações de nossa inspeção visual indicam que deveremos ter um VAR com variáveis diferenciadas. A seguir, vamos criar novas variáveis diferenciadas e repetir o teste, além de retirar o tempo de regime de câmbio fixo:
+
+```{r message=FALSE, warning=FALSE}
+dd <- dd |> 
+	dplyr::mutate(
+		ptr_br_log_dif   = difference(ptr_br_log, lag = 1),
+		ipca_log_dif     = difference(ipca_log, lag = 1),
+		petro_log_dif    = difference(petro_log, lag = 1),
+		cambio_log_dif   = difference(cambio_log, lag = 1),
+		ptr_br_log_dif12 = difference(ptr_br_log, lag = 12),
+		ipca_log_dif12   = difference(ipca_log, lag = 12),
+		petro_log_dif12  = difference(petro_log, lag = 12),
+		cambio_log_dif12 = difference(cambio_log, lag = 12)) |>
+	dplyr::filter(!is.na(petro_log_dif12))
+
+dd <- dd |> filter(dt >= lubridate::my("Jul 1999"))
+attach(dd)
+
+dplyr::bind_rows(
+list(
+	dd |> features( ptr_br_log_dif, c(unitroot_kpss, unitroot_pp)),
+   dd |> features( ipca_log_dif, c(unitroot_kpss, unitroot_pp)),
+   dd |> features( petro_log_dif, c(unitroot_kpss, unitroot_pp)),
+   dd |> features( cambio_log_dif, c(unitroot_kpss, unitroot_pp))  )) |>
+	bind_cols("Variável" =c("Log Dif(-1) Petro Br", "Log Dif(-1) IPCA", "Log Dif(-1) Petro", "Log Dif(-1) Câmbio")) |> 
+	dplyr::select(Variável, 1:4) |> set_tab(cap_tab = "Resultado do KPSS e PP")
+```
+
+Agora temos certeza que uma diferenciação basta para a estacionariedade das variáveis: aceitamos a hipótese nula do KPSS e a alternativa do PP para todas a variáveis. Nosso VAR terá a primeira diferença, somente. A seguir, as variáveis transformadas:
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+plt_cambio <- plot_ly(dd,type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~as.Date(dt), y = ~cambio_log_dif,
+				 name = "Câmbio",
+				 line = list(color = "#30d5c8", width = 2)) |> 
+	layout(showlegend = F,
+			 title='Primeira Diferença do Log da Taxa de Câmbio Comercial R$ ',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "Dif Log R$/US$",
+			 				 zerolinecolor = '#ffff',
+                      zerolinewidth = 2,
+                      gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_cambio
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+plt_ipca <- plot_ly(dd,type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~as.Date(dt), y = ~ipca_log_dif,
+				 name = "IPCA",
+				 line = list(color = "#551a8b", width = 2)) |> 
+	layout(showlegend = F,
+			 title='Primeira Diferença do Log da  IPCA, Brasil, de Jul/95 a Jul/2022.',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "Dif Log IPCA",
+			 				 zerolinecolor = '#ffff',
+                      zerolinewidth = 2,
+                      gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_ipca
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+plt_petro <- plot_ly(dd,type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~as.Date(dt), y = ~petro_log_dif,
+				 name = "Petroleum",
+				 line = list(color = "#2E8B57", width = 2)) |> 
+	layout(showlegend = F,
+			 title='Primeira Diferença do Log da Média do Preço Internacional do Petróleo',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "Dif Log Preço em Dólar",
+			 				 zerolinecolor = '#ffff',
+                      zerolinewidth = 2,
+                      gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_petro
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+plt_petro_n <- plot_ly(dd,type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~as.Date(dt), y = ~ptr_br_log_dif,
+				 name = " Dif Petroleum (R$)",
+				 line = list(color = "#073320", width = 2)) |> 
+	layout(showlegend = F,
+			 title='Primeira Diferença do Log da Média do Preço Internacional do Petróleo, em Reais',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = " Dif Log Preço em Reais",
+			 				 zerolinecolor = '#ffff',
+                      zerolinewidth = 2,
+                      gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_petro_n
+```
+
+# Funções de Autocorrelações
+
+Faremos as funções de autocorrelação (FAC e FACP) para cada variável para perceber quais lags da própria variável ou de seus erros são relevantes para explicar sua trajetória. É possível que o n-ésimo lag de uma variável seja relevante para explicá-la mas, passando para o VAR, esse n-ésimo lag não seja considerado. Essa desconsideração pode aparecer no erro do VAR, a depender da relevância do lag. Conhecer as propiedades de cada variável,individualmente, ajuda a entender o modelo multivariado. A análise das funções também pode nos indicar usar a diferenciação com o evento imediatamente anterior em detrimento da diferenciação com o mesmo mês do ano anterior, fica como exercício avaliar os gráficos das variáveis `<>_dif12`, criadas anteriormente.
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=4, fig.width=9}
+ggarrange(
+dd |> feasts::ACF(ptr_br_log_dif, lag_max = 36) |> ggplot2::autoplot(),
+dd |> feasts::PACF(ptr_br_log_dif, lag_max = 36) |> ggplot2::autoplot()
+,labels = "F.A.'s de Dif(Log(Petro R$))"
+)
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=4, fig.width=9}
+ggarrange(
+dd |> feasts::ACF(ipca_log_dif, lag_max = 36) |> autoplot(),
+dd |> feasts::PACF(ipca_log_dif, lag_max = 36) |> autoplot()
+,labels = "F.A.'s de Dif(Log(IPCA))"
+) # Maior influnência do passado na contemporânea
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=4, fig.width=9}
+ggarrange(
+dd |> feasts::ACF(petro_log_dif, lag_max = 36) |> autoplot(),
+dd |> feasts::PACF(petro_log_dif, lag_max = 36) |> autoplot()
+,labels = "F.A.'s de Dif(Log(Petro US$))"
+)
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=4, fig.width=9}
+ggarrange(
+dd |> feasts::ACF(cambio_log_dif, lag_max = 36) |> autoplot(),
+dd |> feasts::PACF(cambio_log_dif, lag_max = 36) |> autoplot()
+,labels = "F.A.'s de Dif(Log(R$/US$))"
+)
+```
+
+As FAC's nos mostram erros com comportamento senoide em todas as variáveis, com alta persistência para os erros do IPCA, e algumas significâncias assíncronas (sem múltiplos) no componente autorregressivo, o que dificulta a visualização de sazonalidades.
+
+# VAR
+
+Primeiramente, definimos a ordem do conjunto VAR. Para fins de comparação, vamos montar dois modelos: o **primeiro modelo** com Petro US\$, Câmbio e IPCA; **o segundo** com Petro R\$ e IPCA. Separar o efeito do câmbio e do preço do petróleo pode ser valioso na fase de decomposição da variância e por capturar o efeito puro do preço internacional do petróleo: quando fazemos `petro * câmbio`, todos os demais fatores que afetam o câmbio (como saúde fiscal ou taxa de juros do FED) também afetarão o preço percebido do petróleo no país.   
+
+A regra para determinar a ordem do sistema é colocar tantas defasagens forem necessárias para produzir resíduos brancos em todas as variáveis, mas adicionar muitos parâmetros diminui o poder dos testes estatísticos. Devemos usar algum critério de informação para escolher a ordem do sistema, penalizando lags que não contribuem significativamente para a explicação dos erros. Os critérios HQ() e SC() penalizam mais fortemente parâmetros adicionais, enquanto que o AIC() tende a sobreparametrizar o modelo, apesar de funcionar melhor em pequenas amostras, o que não é o caso.
+
+```{r, message=FALSE, warning=FALSE}
+var1_p_select <- VARselect(
+	dd |> dplyr::as_tibble() |>
+		dplyr::select(ipca_log_dif, petro_log_dif, cambio_log_dif),
+	lag.max = 12,
+	season = 12,
+	type = "both")
+var1_p_select$selection |> t() |> set_tab(cap_tab = "VAR 1: Petro US$, Câmbio e IPCA")
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+var2_p_select <- VARselect(
+	dd |> dplyr::as_tibble() |>
+		dplyr::select(ipca_log_dif, ptr_br_log_dif),
+	lag.max = 12,
+	season = 12,
+	type = "both")
+var2_p_select$selection |> t() |> set_tab(cap_tab = "VAR 2: Petro R$ e IPCA")
+```
+
+Vamos rodar os dois modelos com VAR(1) e sem dummies sazonais. Fica como exercício comparar o ganho de explicação e as significâncias com p=4. 
+
+## $VAR_{1}$: Petro US$, Câmbio e IPCA
+```{r, message=FALSE, warning=FALSE}
+var1 <- vars::VAR(
+	dd |> dplyr::as_tibble() |>
+		dplyr::select(ipca_log_dif, cambio_log_dif, petro_log_dif),
+	p = 1,
+	type = "const",
+	season = NULL,
+	exog = NULL)
+summary(var1)
+summary(var1, equation="ipca_log_dif")
+Acoef(var1)
+```
+
+A variável melhor explicada, i.e., com o maior $R^2-adj$, é a equação do IPCA e isso é bem razoável, está conforme nossas hipóteses a priori. A um nível de confiança de 95%, todas as variáveis do IPCA são significantes. O câmbio é explicado somente pelo seu próprio lag. Já o preço do petróleo é explicado por ele mesmo no passado e pelo câmbio no passado, esse último resultado está contradizendo nossa hipótese a priori (a de que nosso câmbio não afeta o preço internacional do petróleo por não sermos um agente com poder de mercado) e submeteremos essa equação a um teste de Granger-causalidade. Os valores altos na matriz de correlação dos resíduos nos diz que podemos ter esquecido alguma outra variável na relação delas, essa relação desconsiderad afetaria os resíduos conjuntamente. A maior correlação é de -0.2605. O diagnóstico dos resíduos, mais adiante, nos ajudarão a entendê-los melhor.   
+As equações do sistema reduzido ficariam:
+
+$$
+\begin{bmatrix}
+ipca_{t} \\ camb_{t} \\ us.petro_{t}
+\end{bmatrix}
+ =
+\begin{bmatrix}
+.0017 \\ .0049 \\ -.0005
+\end{bmatrix}
+ +
+\begin{bmatrix}
+.6279 & .0178 & .0057 \\
+-.3663 & .3232 & -.0478 \\
+1.2086 & -.3709 & .2503
+\end{bmatrix}
+\begin{bmatrix}
+ipca_{t-1} \\ camb_{t-1} \\ us.petro_{t-1}
+\end{bmatrix}
++
+\begin{bmatrix}
+\epsilon_{ipca,t}  \\ \epsilon_{camb,t} \\ \epsilon_{us.petro,t}
+\end{bmatrix}
+$$
+
+## $VAR_{2}$: Petro R$ e IPCA
+
+```{r, message=FALSE, warning=FALSE}
+var2 <- vars::VAR(
+	dd |> dplyr::as_tibble() |>
+		dplyr::select(ipca_log_dif, ptr_br_log_dif),
+	p = 1,
+	type = "const",
+	season = NULL,
+	exog = NULL)
+summary(var2)
+summary(var2, equation="ipca_log_dif")
+```
+
+Como no primeiro modelo, o IPCA foi a variável melhor explicada (maior $R^2-adj$). Tanto seu valor defasado quanto o preço internacional do petróleo em reais são significativos para explicá-la. A única variável significativa que explica os preços em reais do mercado internacional de petróleo é ela mesma no passado, o que corrobora nossa hipótese a priori. O modelo ficaria assim:
+
+$$
+\begin{bmatrix}
+ipca_{t} \\ br.petro_{t}
+\end{bmatrix}
+ =
+\begin{bmatrix}
+.0018 \\ .0023 
+\end{bmatrix}
+ +
+\begin{bmatrix}
+.6166 & .0061  \\
+1.0768 & .1939 \\
+\end{bmatrix}
+\begin{bmatrix}
+ipca_{t-1} \\ br.petro_{t-1}
+\end{bmatrix}
++
+\begin{bmatrix}
+\epsilon_{ipca,t}  \\ \epsilon_{br.petro,t}
+\end{bmatrix}
+$$
+
+
+A seguir, vamos fazer uma base só com os valores realizados e estimados (`realz_fit`) e fazer os gráficos comparando-os:
+
+```{r, message=FALSE, warning=FALSE}
+realz_fit <- dplyr::tibble(
+	dd |> dplyr::as_tibble() |> dplyr::select(dt),
+	var1[["y"]] |> as.data.frame(),
+	var2$y |> as.data.frame() |> dplyr::select(ptr_br_log_dif),
+	"v1_fitted_ipca" = c(NA, var1$varresult$ipca_log_dif$fitted.values),
+	"v1_fitted_cambio" = c(NA, var1$varresult$cambio_log_dif$fitted.values),
+	"v1_fitted_petro" = c(NA, var1$varresult$petro_log_dif$fitted.values),
+	"v2_fitted_ipca"= c(NA,var2$varresult$ipca_log_dif$fitted.values),
+	"v2_fitted_ptr"= c(NA,var2$varresult$ptr_br_log_dif$fitted.values)
+	)
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+plt_ipca_var <- plot_ly(realz_fit,type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~as.Date(dt), y = ~ipca_log_dif,
+				 name = "IPCA",
+				 line = list(color = "#551a8b", width = 2)) |> 
+	add_trace(x = ~as.Date(dt), y = ~v1_fitted_ipca,
+				 name = "Fitted Var1",
+				 line = list(color = "#0e0417", width = 2, dash = 'dot')) |> 
+	add_trace(x = ~as.Date(dt), y = ~v2_fitted_ipca,
+				 name = "Fitted Var2",
+				 line = list(color = "#8C2280", width = 2, dash = 'dash')) |> 
+	layout(showlegend = T,
+			 title='Dif(Log(IPCA)) Realizado e Estimado em VAR¹ e VAR²',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "Dif Log IPCA",
+			 				 zerolinecolor = '#ffff',
+                      zerolinewidth = 2,
+                      gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_ipca_var
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+plt_cambio_var <- plot_ly(realz_fit,type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~as.Date(dt), y = ~cambio_log_dif,
+				 name = "Câmbio",
+				 line = list(color = "#30d5c8", width = 2)) |> 
+	add_trace(x = ~as.Date(dt), y = ~v1_fitted_cambio,
+				 name = "Fitted Var1",
+				 line = list(color = "#156760", width = 2, dash = 'dot')) |> 
+	layout(showlegend = T,
+			 title='Dif(Log(Câmbio)) Realizado e Estimado em VAR¹',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "Dif Log R$/US$",
+			 				 zerolinecolor = '#ffff',
+                      zerolinewidth = 2,
+                      gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_cambio_var
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+plt_petro_var <- plot_ly(realz_fit,type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~as.Date(dt), y = ~petro_log_dif,
+				 name = "Petroleum US$",
+				 line = list(color = "#2E8B57", width = 2)) |> 
+	add_trace(x = ~as.Date(dt), y = ~v1_fitted_petro,
+				 name = "Fitted Var1",
+				 line = list(color = "#0c2416", width = 2, dash = 'dot')) |> 
+	layout(showlegend = T,
+			 title='Dif(Log(Petro US$)) Realizado e Estimado em VAR¹',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "Dif Log Preço em Dólar",
+			 				 zerolinecolor = '#ffff',
+                      zerolinewidth = 2,
+                      gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_petro_var
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+
+plt_petro_br_var <- plot_ly(realz_fit,type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~as.Date(dt), y = ~ptr_br_log_dif,
+				 name = "Petroleum R$",
+				 line = list(color = "#073320", width = 2)) |> 
+	add_trace(x = ~as.Date(dt), y = ~v2_fitted_ptr,
+				 name = "Fitted Var2",
+				 line = list(color = "#02110a", width = 2, dash = 'dot')) |> 
+	layout(showlegend = T,
+			 title='Dif(Log(Petro R$)) Realizado e Estimado em VAR²',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = " Dif Log Preço em Reais",
+			 				 zerolinecolor = '#ffff',
+                      zerolinewidth = 2,
+                      gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_petro_br_var
+```
+
+# Diagnóstico dos Resíduos do VAR
+
+Vamos coletar os resíduos em uma base:
+
+```{r, message=FALSE, warning=FALSE}
+resids <- dplyr::tibble(
+	dd |> dplyr::as_tibble() |> dplyr::select(dt) |> tail(-1),
+	"v1_ipca" = var1[["varresult"]][["ipca_log_dif"]][["residuals"]],
+	"v1_cambio" = var1[["varresult"]][["cambio_log_dif"]][["residuals"]],
+	"v1_petro" = var1[["varresult"]][["petro_log_dif"]][["residuals"]],
+	"v2_ipca" = var2[["varresult"]][["ipca_log_dif"]][["residuals"]],
+	"v2_ptr" = var2[["varresult"]][["ptr_br_log_dif"]][["residuals"]]
+)
+```
+
+Os primeiros três testes que faremos serão para investigar autocorrelação individual e conjunta dos resíduos: se esquecemos de alguma variável muito relevante para a explicação das variáveis dependentes, então a jogamos para o erro e seu padrão poderá acusar um erro correlacionado com ele mesmo, no passado. O teste de heterocedasticidade verifica se as variâncias dos resíduos diferenciam-se no tempo, isso não interfere nas propriedades de inexistência de viés e consistência dos estimadores de MQO, no entanto, eles deixam de ter variância mínima e eficiência e interfere nas inferências que poderemos fazer com os parâmetros estimados. O teste de quebra estrutural verificará se, em algum momento, a variável sofreu alguma mudança no seu processo aleatório. 
+
+## Autocorrelação: Breusch-Godfrey
+
+O teste Breusch-Godfrey examina a autocorrelação conjunta dos erros, se o coeficiente do vetor dos erros passados é significativo ao explicar o vetor de erro presente. Tem como hipótese nula a não-autocorrelação conjunta dos resíduos.
+
+```{r, message=FALSE, warning=FALSE}
+test_autocorr_var1 <- serial.test(
+	var1,
+	lags.pt = 12, type = "BG")
+test_autocorr_var1
+
+test_autocorr_var2 <- serial.test(
+	var2,
+	lags.pt = 12, type = "BG")
+test_autocorr_var2
+```
+
+Os resultados indicam que, a 5%, podemos rejeitar a hipótese nula, ou seja, existe autocorrelação conjunta dos resíduos do primeiro modelo, já que o p-valor é 4.73% (por pouco!). Já no segundo modelo, aceitamos a hipótese nula de que não existe autocorrelação conjunta.
+
+## Autocorrelação: Ljung-Box
+
+Agora testaremos autocorrelação individual dos erros de cada equação. O teste Ljung-Box tem a hipótese nula de não-autocorrelação dos resíduos, ou seja, independência em relação às suas realizações passadas.
+
+```{r, message=FALSE, warning=FALSE}
+resids$v1_ipca |> ljung_box(lag = 12)
+resids$v1_cambio |> ljung_box(lag = 12)
+resids$v1_petro |> ljung_box(lag = 12)
+
+resids$v2_ipca |> ljung_box(lag = 12)
+resids$v2_ptr |> ljung_box(lag = 12)
+```
+
+Todos os testes aceitaram a nula de não-autocorrelação individual dos resíduos. A independência individual e a correlação conjunta no primeiro modelo é um resultado interessante: os erros de alguma outra equação ajudam a explicar os erros da outra equação, eles não independem entre si. 
+
+## Autocorrelação: FAC e FACP nos Resíduos
+
+O teste Ljung-Box, de independência temporal individual, analisa se a soma das autocorrelações é diferente de zero, em cada equação. Faremos agora os gráficos das funções de autocorrelação pura e parcial, o que nos mostrará, em cada equação e cada defasagem, quais defasagens do erro são significantes para explicá-lo. Percorrendo esses três testes podemos ter uma visão mais detalhada do comportamento dos resíduos: conjuntamente, individualmente e em cada defasagem.
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=4, fig.width=9, fig.cap="FAC e FACP do IPCA de VAR(1)"}
+ggarrange(
+ACF(resids |> 
+	 	dplyr::select(dt, v1_ipca) |> 
+	 	as_tsibble(),
+	 lag_max = 36) |> 
+	autoplot()
+,PACF(resids |> 
+	  	dplyr::select(dt, v1_ipca) |> 
+	  	as_tsibble(),
+	lag_max = 36) |> 
+	autoplot() 
+)
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=4, fig.width=9, fig.cap="FAC e FACP do Câmbio de VAR(1)"}
+ggarrange(
+ACF(resids |> 
+	 	dplyr::select(dt, v1_cambio) |> 
+	 	as_tsibble(),
+	 lag_max = 36) |> 
+	autoplot()
+,PACF(resids |> 
+	  	dplyr::select(dt, v1_cambio) |> 
+	  	as_tsibble(),
+	lag_max = 36) |> 
+	autoplot() 
+)
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=4, fig.width=9, fig.cap="FAC e FACP do Petro US de VAR(1)"}
+ggarrange(
+ACF(resids |> 
+	 	dplyr::select(dt, v1_petro) |> 
+	 	as_tsibble(),
+	 lag_max = 36) |> 
+	autoplot()
+,PACF(resids |> 
+	  	dplyr::select(dt, v1_petro) |> 
+	  	as_tsibble(),
+	lag_max = 36) |> 
+	autoplot() 
+)
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=4, fig.width=9, fig.cap="FAC e FACP do IPCA de VAR(2)"}
+ggarrange(
+ACF(resids |> 
+	 	dplyr::select(dt, v2_ipca) |> 
+	 	as_tsibble(),
+	 lag_max = 36) |> 
+	autoplot()
+,PACF(resids |> 
+	  	dplyr::select(dt, v2_ipca) |> 
+	  	as_tsibble(),
+	lag_max = 36) |> 
+	autoplot() 
+)
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=4, fig.width=9, fig.cap="FAC e FACP do Petro BR de VAR(2)"}
+ggarrange(
+ACF(resids |> 
+	 	dplyr::select(dt, v2_ptr) |> 
+	 	as_tsibble(),
+	 lag_max = 36) |> 
+	autoplot()
+,PACF(resids |> 
+	  	dplyr::select(dt, v2_ptr) |> 
+	  	as_tsibble(),
+	lag_max = 36) |> 
+	autoplot() 
+)
+```
+
+O erro na equação do IPCA dos dois modelos exibem significância na 12ª e na 14ª defasagem: o erro do mesmo mês do ano anterior ainda é significante ao explicar o erro atual. Uma solução seria incorporar uma defasagem L=12 e L=14 aditiva do erro no VAR e fazer um teste de penalidade por colocar variáveis a mais, inclusive no câmbio, em petro(US\$) e em petro(R\$). Outra solução pode ser a presença ignorada de cointegração entre as variáveis, que será considerada mais adiante.
+
+## Heterocedasticidade: ARCH Multiplicador de Lagrange
+
+O teste ARCH-LM multivariado verifica heterocedasticidade autorregressiva nos erros: se a atual variância do erro depende dos valores de suas variâncias passadas. Esse defeito não nos permite ter estimações eficientes para um mesmo intervalo em tempos diferentes, deixando-os incomparáveis. Heterocedasticidade indica uma dispersão crescente das realizações ao entorno de sua média. A hipótese nula do teste é que os coeficientes de um AR das variâncias são conjuntamente zero, ou seja, não há heterocedasticidade; e a hipótese alternativa é que qualquer um dos coeficientes é diferente de zero. O teste é realizado para o erro de cada equação e na forma VARCH (um VAR com os erros ao quadrado) para o teste multivariado.
+
+```{r, message=FALSE, warning=FALSE}
+test_var1_arch <-
+	arch.test(var1, lags.multi = 12, multivariate.only = FALSE)
+test_var1_arch
+
+test_var2_arch <- 
+	arch.test(var2, lags.multi = 12, multivariate.only = FALSE)
+test_var2_arch
+```
+
+O p-valor dos testes mostram que, nos dois modelos, os erros da equação do IPCA são homocedásticos enquanto que os erros das demais equações (câmbio, petro US e petro BR) são heterocedásticos. Os testes multivariados apontam para heterocedasticidade. Uma solução para o caso seria incorporar um componente ARCH nas equações do modelo sob pena de sobreparametrizá-lo. Também testaremos se a consideração da cointegração muda os resultados desse teste.
+
+## Quebra Estrutural: Teste CUSUM
+
+O teste CUSUM (cumulative sum) é um teste e uma forma visual de entender a estabilidade do modelo e possíveis quebras estruturais no processo aleatório atravéz do plot de uma medida de qualidade, baseada no somatório dos erros, e os limites inferior e superior dessa medida de qualidade. Os testes mostram certa estabilidade das estimações, uma vez que nenhuma equação nos dois modelos ultrapassaram os limites de significância. 
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=9, fig.width=9}
+
+test_var1_cusum <- stability(var1, type = "OLS-CUSUM")
+test_var1_cusum |> plot()
+
+test_var2_cusum <- stability(var2, type = "OLS-CUSUM")
+test_var2_cusum |> plot()
+```
+
+# Teste de Cointegração de Johansen
+
+Agora, o deus ex-machina desse ao palco. A autocorrelação conjunta dos resíduos pode indicar algo afetando os resíduos de forma que os coeficientes de um VAR usando os erros sejam conjuntamente significativos, isso indica que pode haver algo não capturado nas relações entre as estimações. Faremos agora o teste de cointegração das variáveis: a existência de alguma trajetória estacionária feita de alguma combinação linear de curto-prazo entre as variáveis, como dito na introdução.   
+
+O Teste de Cointegração de Johansen usa o fato de que o posto da matriz de coeficientes de um modelo cointegrado é não-nulo, ou seja, há pelo menos uma linha linearmente independente na matriz de coeficientes da correção dos erros. Existem duas estatísticas no teste: a raíz característica máxima ($\lambda_{max}$) e o traço da matriz de raízes características ($\lambda_{trc}$). O teste  $\lambda_{trc}$ é mais geral: com hipótese nula de que o número de combinações lineares independentes (r) é menor ou iqual a um i, ou seja, $H_0: \ \ r \leq i$ e $H_1: \ \ r \neq i$. O teste $\lambda_{max}$ é mais específico: $H_0: \ \ r = i$ e $H_1: \ \ r = i+1$, que usaremos nesse exercício.
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=9, fig.width=9}
+johansen_var1_max <- ca.jo(
+	dd |> dplyr::as_tibble() |>
+		dplyr::select(ipca_log, cambio_log, petro_log),
+	type = "eigen",
+	ecdet = "const",
+	K = 2,
+	spec = "transitory",
+	season = 12,
+	dumvar = NULL
+)
+
+johansen_var1_max |> summary()
+
+```
+
+No teste do máximo para o primeiro modelo, começamos o teste por r=0, onde aceitamos $H_1$, daí vamos para o teste de $r \leq 1$, onde rejeitamos a nula a 10% e aceitamos a 5%, continuaremos a trabalhar com os 5% para valor crítico, ou seja, as variáveis são cointegrada e há um vetor independente de cointegração entre as variáveis.
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=9, fig.width=9}
+johansen_var2_max <- ca.jo(
+	dd |> dplyr::as_tibble() |>
+		dplyr::select(ipca_log, ptr_br_log),
+	type = "eigen",
+	ecdet = "none",
+	K = 2,
+	spec = "transitory",
+	season = 12,
+	dumvar = NULL
+)
+
+johansen_var2_max |> summary()
+
+```
+
+No teste do máximo pra o segundo modelo, aceitamos a hipótese nula de r = 0, ou seja, não há cointegração entre as duas variáveis. **Devemos proceder com um VECM para o primeiro modelo e um VAR com o segundo modelo.**
+
+# VECM do Trio de Variáveis
+
+O comando `tsDyn::VECM()` tem como parâmetros a escolha de estimar o VECM por MQO de dois estágios ou máxima verossimilhança (MV), conhecidos como método de Engle-Granger e Johansen, respectivamente. A diferença entre eles ^[Veja [essa discussão](https://stats.stackexchange.com/questions/125811/estimation-of-vecm-via-ml-and-ols) , e [essa segunda discussão](https://stats.stackexchange.com/questions/122684/ols-versus-ml-estimation-of-vecm) respondidas por Matifou para entender brevemente as diferenças.] é que via 2-MQO tem um grande viés no estimador do primeiro estágio, o que acaba por contaminar o segundo estágio. O método de Johansen tem uma função geradora de momentos infinitos para população finita, o que provoca alta variância do estimador e, por fim, diminui a eficiência. Já que ambos consideram a combinação linear de curto-prazo $\beta$ como dada, é aconselhado ^[ [Estimation of VECM via ML and OLS](https://stats.stackexchange.com/questions/122684/ols-versus-ml-estimation-of-vecm) ] usar o 2-MQO por envolver somente uma única coimbinação linear independente (posto = 1). Embora a estimação com 2-MQO resultou em AIC e BIC menores que com MV, a variabilidade de resultados dos estimadores e significâncias estatísticas deste último é maior que a estimação com 2-MQO: estimei várias versões VECM com constante ou trend na relação de longo prazo ou na de curto-prazo. De todos os modelos testados (recomendo as comparações como exercício), o seginte modelo apresentou os maiores AIC e BIC:
+
+```{r}
+vecm3 <- tsDyn::VECM(
+	dd |> dplyr::as_tibble() |> dplyr::select(ipca_log, cambio_log,petro_log),
+	lag = 1,
+	r=1,
+	include = "none",
+	estim = "2OLS",
+	LRinclude = "none"
+)
+
+vecm3 |> summary()
+vecm3 |> summary(equation="ipca_log")
+```
+
+Representado do modo matricial como:
+
+$$ \Delta X_t = \Pi X_{t-1} + \Gamma_1 \Delta X_{t-1} + \epsilon_t $$
+
+com:
+
+$$ \Pi = \alpha \beta^{‘} $$
+sendo $\alpha$ a velocidadde de ajuste e $\beta$ o vetor de cointegração que, nesse caso, é único. Portanto:
+
+$$ \Delta X_t = \begin{bmatrix}  .0004 \\ -.0006 \\  .0254 \end{bmatrix}
+\begin{bmatrix}
+1 \\ -1.5893 \\ -1.6114
+\end{bmatrix}^{'}
+X_{t-1} 
++ 
+\begin{bmatrix}
+.8471  &  .0232 &  .0072 \\
+.2106  &  .3311 & -.0489 \\
+.9128  & -.3765 &  .2636 
+\end{bmatrix}
+\Delta X_{t-1} + \epsilon_t $$
+
+Portanto, o termo de correção de erros $ECT = \beta^{‘} X_{t-1}$ ficou com a trajetória representada no gráfico abaixo. O termo ETC tem valores negativos para o câmbio e o Petróleo (-1.5893 e -1.6114) e a velocidade de ajuste ($\alpha$) positiva nas equações do IPCA e do Petróleo (a única com coeficiente significativo a 10%) e negativa na do câmbio (.0004,-.0007,.0267).    
+Para ter noção do que ocorre no modelo, por exemplo, uma inovação unitária no log do preço internacional do petróleo afetaria a equação do log do IPCA de duas formas: pelo próprio coeficiente do petróleo ($.0072$) e pelos termos da ECT e $\alpha$: $-1.6114 \times .0004 = -.0006$. O saldo do choque +1 no log do preço internacional do petróleo no log do IPCA seria $+.0065$ com o termo ECT funcionando como um desacelerador do impacto. A verificação gráfica desse exemplo será feita na Função Impulso-resposta.
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+
+ect_vecm3 <- dplyr::tibble(
+	dd |> dplyr::as_tibble() |> dplyr::select(dt),
+	"ect" = vecm3[["model"]][["ECT"]]
+)
+
+plt_ECT_vecm3 <- plot_ly(ect_vecm3,
+								  type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~as.Date(dt), y = ~ect,
+				 name = "Error Correction Term",
+				 line = list(color = "#551a8b", width = 2)) |> 
+	layout(showlegend = T,
+			 title='Termo de Ajuste do Curto-prazo (ECT) em VECM3',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "Dif Log",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_ECT_vecm3
+```
+
+E a comparação entre o IPCA realizado e estimado ficou como:
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+# Comparing IPCA
+realz_fit_vecm3 <- dplyr::tibble(
+	dd |> dplyr::as_tibble() |> dplyr::select(dt),
+	"realiz_ipca" = vecm3[["model"]] |> 
+		dplyr::as_tibble() |> pull(`ipca_log -1`),
+	"fit_ipca" = c(0,0,vecm3[["fitted.values"]] |>
+							dplyr::as_tibble() |> pull(ipca_log))
+)
+
+plt_ipca_vecm3 <- plot_ly(realz_fit_vecm3,
+								  type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~as.Date(dt), y = ~realiz_ipca,
+				 name = "IPCA",
+				 line = list(color = "#551a8b", width = 2)) |> 
+	add_trace(x = ~as.Date(dt), y = ~fit_ipca,
+				 name = "Fitted",
+				 line = list(color = "#0e0417", width = 2, dash = 'dot')) |> 
+	layout(showlegend = T,
+			 title='Dif(Log(IPCA)) Realizado e Estimado em VECM3',
+			 xaxis = list(rangeslider = list(visible = T),
+			 				 title = "Data",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "Dif Log IPCA",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+plt_ipca_vecm3
+```
+
+Cabe aqui realizar os mesmos diagnósticos de resíduos para ver como se comporta a estimação do VECM feita.
+
+# Formas Estruturais
+
+Existem várias formas de recuperar os erros estruturais dos sistemas na sua forma reduzida. A primeira aprendida nos cursos de Econometria das Séries de Tempo é a **Decomposição de Cholesky** para o VAR, onde, importanto o ordenamento das variáveis no sistema, faz-se, ou de $A^{-1}$ ou de $B$, em, $\hat e = A^{-1}B_{\sigma}\hat\epsilon_{t}$, uma matriz triangular-inferior, substituindo por zeros os elementos da parte superior à diagonal principal.    
+Para fazer restrições em A ou em B, devemos impor $K(K-1)/2$ restrições, com K sendo o número de variáveis participantes do modelo, no caso, K=2 para o VAR.A outra matriz que não é escolhida para ser restringida se torna uma matriz identidade. Para fazer restrições em ambas as matrizes, A e B, devemos impor $K^2 + K(K-1)/2$ restrições.     
+Para ambos os modelos, VAR2(1) (k=2) e VECM (k=4), vamos usar a suposição de que o Preço Internacional do Petróleo em Reais afeta o IPCA mas não é afetado por esse. Em termos operacionais, vamos impor uma ($2(2-1)/2 = 1$) restrição em $A^{-1}$. Também vamos supor que existem choques em demais variáveis não consideradas nesse modelo, portanto, contidas nos erros, que afetem IPCA, US\$Petro e Câmbio, ou seja, vamos manter a matriz de covariâncias $B = I_K$.    
+Para recuperar os erros estruturais do VECM, usa-se o sistema numa Decomposição de Beveridge-Nelson, uma decomposição alternativa à Decomposição Multiplicativa Clássica, feita anteriormente:
+
+$$
+y_{t} = \Xi \sum_{i=1}^{t}u_i + \sum_{j=1}^{\infty} \Xi_j^* u_{t-j} + y_{0}^{*}
+$$
+
+Onde o primeiro termo do lado direto da equação refere-se às tendências comuns do sistema, onde os efeitos de longo prazo dos choques são capturados. O segundo termo é integrado de ordem zero ($I(0)$) e é suposto que a soma infinita de $ \Xi_j^*$ converge para zero à medida que $j \rightarrow \infty$. Por causa de seu posto reduzido, $\Xi$ tem apenas K-r tendências comuns. Portanto, conhecendo o posto de $\Pi$, pode-se concluir que, no máximo, r dos erros estruturais podem ter um efeito transitório. Isso implica que no máximo r colunas de $\Xi$ podem ser definidas como zero.   
+Em termos dos erros da forma reduzida, as tendências comuns são $\Xi B \sum_{t=1}^{\infty} \epsilon_t$ e os efeitos de longo prazo dos choques estruturais são capturadas por $\Xi B$, onde o efeito contemporâneo é capturada pela matriz B, que receberá nenhuma restrição ($r(r-1)/2 = 0$).   
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=9}
+# Matriz de coeficientes estimados. para modelos -A ou -AB do VAR
+A_var <- matrix(NA, nrow=2, ncol=2)
+A_var[2,1] <- 0 
+A_var
+
+# Matriz de impacto de longo prazo estimada do VECM.
+LR_vecm <- matrix(NA, nrow=3, ncol=3) 
+LR_vecm[3,1:2] <- 0
+LR_vecm[2,1] <- 0
+LR_vecm
+
+# Matriz de impacto contemporâneo estimado do VECM.
+SR_vecm <- matrix(NA, nrow=3, ncol=3)
+SR_vecm
+
+svar <- SVAR(var2, Amat=A_var, estmethod="direct", lrtest=F)
+svec <-  SVEC(johansen_var1_max,
+				  LR = LR_vecm, SR = SR_vecm, r = 1,
+				  lrtest=FALSE, boot=TRUE,runs=1000)
+
+svar |> summary()
+svec |> summary()
+```
+
+# Função Impulso-resposta
+
+A função Impulso-resposta é o plot de $$\frac{\partial y_{t+i}}{\partial e_t} = \Theta_i$$ com $i$ na abissiça. O resultado $\Theta_i$ é uma matriz KxK de K variáveis e K choques estruturais. Ou seja, o impacto de uma inovação pontual, em $t$, pelo tempo $i$ de cada erro estrutural $e_{j,t}$ em cada variável $y_{j,t+i}$ com $j=1,...,K$.    
+Abaixo segue as resposta em $Dif(ln( \: IPCA \:))$ de choques do próprio IPCA e de R\$ Petro. Primeiro fazemos o cálculo com `vars::irf()`, construímos um data frame com os valores calculados e montamos com o `plotly`.
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=4, fig.width=8}
+ir_svar <- irf(svar, response = "ipca_log_dif", n.ahead = 12, boot = TRUE)
+# criando o data.frame
+ir_dd_svar <- tibble(
+	"ir_ipca_u_log_dif" = ir_svar[["Upper"]][["ipca_log_dif"]][,1],
+	"ir_ipca_log_dif"   = ir_svar[["irf"]][["ipca_log_dif"]][,1],
+	"ir_ipca_l_log_dif" = ir_svar[["Lower"]][["ipca_log_dif"]][,1],
+	"ir_ptr_u_log_dif"  = ir_svar[["Upper"]][["ptr_br_log_dif"]][,1],
+	"ir_ptr_log_dif"    = ir_svar[["irf"]][["ptr_br_log_dif"]][,1],
+	"ir_ptr_l_log_dif"  = ir_svar[["Lower"]][["ptr_br_log_dif"]][,1]
+)
+# plot do impulso-resposta
+ir_svar_plt1 <- plot_ly(ir_dd_svar, type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~1:13, y = ~ir_ipca_u_log_dif,
+				 name = "IC Sup",
+				 showlegend = FALSE,
+				 line = list(color = 'transparent')) |> 
+	add_trace(x = ~1:13, y = ~ir_ipca_l_log_dif,
+				 name = "IC Inf",
+				 showlegend = FALSE,
+				 fill = 'tonexty', fillcolor='rgba(0,100,80,0.2)',
+				 line = list(color = 'transparent')) |> 
+	add_trace(x = ~1:13, y = ~ir_ipca_log_dif,
+				 name = "IR-IPCA",
+				 showlegend = FALSE,
+				 line = list(color='rgb(0,100,80)')) |> 
+	layout(title='SVAR Impulso-resposta de IPCA no IPCA',
+			 xaxis = list(#rangeslider = list(visible = T),
+			 				 title = "Meses",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "Impacto em Dif(Log(IPCA))",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+
+ir_svar_plt1
+
+ir_svar_plt2 <- plot_ly(ir_dd_svar, type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~1:13, y = ~ir_ptr_u_log_dif,
+				 name = "IC Sup",
+				 showlegend = FALSE,
+				 line = list(color = 'transparent')) |> 
+	add_trace(x = ~1:13, y = ~ir_ptr_l_log_dif,
+				 name = "IC Inf",
+				 showlegend = FALSE,
+				 fill = 'tonexty', fillcolor='rgba(0,100,80,0.2)',
+				 line = list(color = 'transparent')) |> 
+	add_trace(x = ~1:13, y = ~ir_ptr_log_dif,
+				 name = "IR-IPCA",
+				 showlegend = FALSE,
+				 line = list(color='rgb(0,100,80)')) |> 
+	layout(title='SVAR Impulso-resposta de R$ Preto no IPCA',
+			 xaxis = list(#rangeslider = list(visible = T),
+			 				 title = "Meses",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 yaxis = list(title = "Impacto em Dif(Log(IPCA))",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+
+ir_svar_plt2
+
+
+
+ir_svec <- irf(svec, response = "ipca_log", n.ahead = 36, boot = TRUE)
+# criando o data.frame
+ir_dd_svec <- tibble(
+	"ir_ipca_u_log" = ir_svec[["Upper"]][["ipca_log"]][,1],
+	"ir_ipca_log"   = ir_svec[["irf"]][["ipca_log"]][,1],
+	"ir_ipca_l_log" = ir_svec[["Lower"]][["ipca_log"]][,1],
+	"ir_petro_u_log"  = ir_svec[["Upper"]][["petro_log"]][,1],
+	"ir_petro_log"    = ir_svec[["irf"]][["petro_log"]][,1],
+	"ir_petro_l_log"  = ir_svec[["Lower"]][["petro_log"]][,1],
+	"ir_cambio_u_log"  = ir_svec[["Upper"]][["cambio_log"]][,1],
+	"ir_cambio_log"    = ir_svec[["irf"]][["cambio_log"]][,1],
+	"ir_cambio_l_log"  = ir_svec[["Lower"]][["cambio_log"]][,1]
+)
+# criando o plot
+ir_svec_plt1 <- plot_ly(ir_dd_svec, type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~1:37, y = ~ir_ipca_u_log,
+				 name = "IC Sup",
+				 showlegend = FALSE,
+				 line = list(color = 'transparent')) |> 
+	add_trace(x = ~1:37, y = ~ir_ipca_l_log,
+				 name = "IC Inf",
+				 showlegend = FALSE,
+				 fill = 'tonexty', fillcolor='rgba(0, 104, 201,0.2)',
+				 line = list(color = 'transparent')) |> 
+	add_trace(x = ~1:37, y = ~ir_ipca_log,
+				 name = "IR-IPCA",
+				 showlegend = FALSE,
+				 line = list(color='rgb(0, 104, 201)')) |> 
+	layout(title='SVEC Impulso-resposta de IPCA no IPCA',
+			 xaxis = list(#rangeslider = list(visible = T),
+			 	title = "Meses",
+			 	zerolinecolor = '#ffff',
+			 	zerolinewidth = 2,
+			 	gridcolor = 'ffff'),
+			 yaxis = list(title = "Impacto em Dif(Log(IPCA))",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+
+ir_svec_plt1
+
+ir_svec_plt2 <- plot_ly(ir_dd_svec, type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~1:37, y = ~ir_cambio_u_log,
+				 name = "IC Sup",
+				 showlegend = FALSE,
+				 line = list(color = 'transparent')) |> 
+	add_trace(x = ~1:37, y = ~ir_cambio_l_log,
+				 name = "IC Inf",
+				 showlegend = FALSE,
+				 fill = 'tonexty', fillcolor='rgba(0, 104, 201,0.2)',
+				 line = list(color = 'transparent')) |> 
+	add_trace(x = ~1:37, y = ~ir_cambio_log,
+				 name = "IR-Câmbio",
+				 showlegend = FALSE,
+				 line = list(color='rgb(0, 104, 201)')) |> 
+	layout(title='SVEC Impulso-resposta de Câmbio no IPCA',
+			 xaxis = list(#rangeslider = list(visible = T),
+			 	title = "Meses",
+			 	zerolinecolor = '#ffff',
+			 	zerolinewidth = 2,
+			 	gridcolor = 'ffff'),
+			 yaxis = list(title = "Impacto em Dif(Log(IPCA))",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+
+ir_svec_plt2
+
+ir_svec_plt3 <- plot_ly(ir_dd_svec, type = 'scatter', mode = 'lines') |> 
+	add_trace(x = ~1:37, y = ~ir_petro_u_log,
+				 name = "IC Sup",
+				 showlegend = FALSE,
+				 line = list(color = 'transparent')) |> 
+	add_trace(x = ~1:37, y = ~ir_petro_l_log,
+				 name = "IC Inf",
+				 showlegend = FALSE,
+				 fill = 'tonexty', fillcolor='rgba(0, 104, 201,0.2)',
+				 line = list(color = 'transparent')) |> 
+	add_trace(x = ~1:37, y = ~ir_petro_log,
+				 name = "IR-Câmbio",
+				 showlegend = FALSE,
+				 line = list(color='rgb(0, 104, 201)')) |> 
+	layout(title='SVEC Impulso-resposta de US$ Petro no IPCA',
+			 xaxis = list(#rangeslider = list(visible = T),
+			 	title = "Meses",
+			 	zerolinecolor = '#ffff',
+			 	zerolinewidth = 2,
+			 	gridcolor = 'ffff'),
+			 yaxis = list(title = "Impacto em Dif(Log(IPCA))",
+			 				 zerolinecolor = '#ffff',
+			 				 zerolinewidth = 2,
+			 				 gridcolor = 'ffff'),
+			 plot_bgcolor='#e5ecf6')
+
+ir_svec_plt3
+```
+
+# Decomposição da Variância do Erro
+
+A decomposição da Variância do erro mede o quanto da variância do erro de previsão ou erro quadrático médio de previsão (MSPE) de $y_{t+i}$ no horizonte $i = 0,1,...,H$ é contabilizado por cada choque estrutural $e_{j,t}$. A variância é dado por:
+
+$$
+MSPE(h) ≡ E[(y_{t+i} − y_{t+i|t} )(y_{t+i} − y_{t+i|t} ) ] = \sum_{j=0}^{i-1} \Theta_j\Theta^{'}_j 
+$$
+
+Com o mesmo $\Theta_i$ calculado na seção anterior.   
+Primeiramente, calculamos a decomposição com `vars::fevd()` para a variável $Dif(ln( \: IPCA \:))$ do modelo SVAR e $ln( \: IPCA \:)$ do modelo SVECM, montamos o data frame e construímos a visualização com o `plotly`. Passe o mouse por cima do gráfico para visualiza os valores.    
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=4, fig.width=8}
+fevd_svar_ipca <- fevd(svar, n.ahead = 24)$ipca_log_dif
+fevd_svar_ipca <- fevd_svar_ipca |> 
+	dplyr::as_tibble() |> add_column("m" = 1:24)
+
+fevd_svar_plt <- plot_ly(fevd_svar_ipca, type = "bar") |> 
+	add_trace(x = ~m, y = ~ipca_log_dif,   name="IPCA",
+				 marker = list(color = '#009779')) |> 
+	add_trace(x = ~m, y = ~ptr_br_log_dif, name="Petro",
+				 marker = list(color = '#ca0028')) |> 
+	layout(title = "Decomposição da Variância SVAR no IPCA",
+			 barmode = 'stack',
+			 xaxis = list(title = "Meses"),
+			 yaxis = list(title = "Dif(Log( IPCA ))"))
+fevd_svar_plt
+
+fevd_svec_ipca <- fevd(svec, n.ahead = 24)$ipca_log
+fevd_svec_ipca <- fevd_svec_ipca |> 
+	dplyr::as_tibble() |> add_column("m" = 1:24)
+
+fevd_svec_plt <- plot_ly(fevd_svec_ipca, type = "bar") |> 
+	add_trace(x = ~m, y = ~ipca_log,   name="IPCA",
+				 marker = list(color = '#009ac9')) |> 
+	add_trace(x = ~m, y = ~cambio_log, name="Câmbio",
+				 marker = list(color = '#00c950')) |> 
+	add_trace(x = ~m, y = ~petro_log, name="Petro",
+				 marker = list(color = '#ff922c')) |> 
+	layout(title = "Decomposição da Variância SVEC no IPCA",
+			 barmode = 'stack',
+			 xaxis = list(title = "Meses"),
+			 yaxis = list(title = "Dif(Log( IPCA ))"))
+fevd_svec_plt
+```
+
+
+
+# Decomposição Histórica
+
+A Decomposição Histórica, por sua vez, quantifica o quanto um determinado choque estrutural explica as flutuações observadas historicamente nas variáveis VAR, ou seja, mostra o efeito cumulativo de um determinado choque estrutural sobre cada variável em cada ponto no tempo. O cálculo é feito seguindo as mesmas equações dos cálculos anteriores, do Impulso-resposta e da Decomposição do Erro:
+$$
+\hat y_{t} = \sum^{t-1}_{i=0} \Theta_i e_{t-i}
+$$
+
+As três funçõs que uso no exercício (`VARhd(·)`) foram feitas por [Daniel Ryback](https://stackoverflow.com/questions/36950491/historical-decomposition-in-r). 
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+VARmakexy <- function(DATA,lags,c_case){
+	
+	nobs <- nrow(DATA)
+	
+	#Y matrix 
+	Y <- DATA[(lags+1):nrow(DATA),]
+	Y <- DATA[-c(1:lags),]
+	
+	#X-matrix 
+	if (c_case==0){
+		X <- NA
+		for (jj in 0:(lags-1)){
+			X <- rbind(DATA[(jj+1):(nobs-lags+jj),])
+		} 
+	} else if(c_case==1){ #constant
+		X <- NA
+		for (jj in 0:(lags-1)){
+			X <- rbind(DATA[(jj+1):(nobs-lags+jj),])
+		}
+		X <- cbind(matrix(1,(nobs-lags),1), X) 
+	} else if(c_case==2){ # time trend and constant
+		X <- NA
+		for (jj in 0:(lags-1)){
+			X <- rbind(DATA[(jj+1):(nobs-lags+jj),])
+		}
+		trend <- c(1:nrow(X))
+		X <-cbind(matrix(1,(nobs-lags),1), t(trend))
+	}
+	A <- (t(X) %*% as.matrix(X)) 
+	B <- (as.matrix(t(X)) %*% as.matrix(Y))
+	
+	Ft <- ginv(A) %*% B
+	
+	retu <- list(X=X,Y=Y, Ft=Ft)
+	return(retu)
+}
+
+companionmatrix <- function (x) 
+{
+	if (!(class(x) == "varest")) {
+		stop("\nPlease provide an object of class 'varest', generated by 'VAR()'.\n")
+	}
+	K <- x$K
+	p <- x$p
+	A <- unlist(Acoef(x))
+	companion <- matrix(0, nrow = K * p, ncol = K * p)
+	companion[1:K, 1:(K * p)] <- A
+	if (p > 1) {
+		j <- 0
+		for (i in (K + 1):(K * p)) {
+			j <- j + 1
+			companion[i, j] <- 1
+		}
+	}
+	return(companion)
+}
+
+VARhd <- function(Estimation){
+	
+	## make X and Y
+	nlag    <- Estimation$p   # number of lags
+	DATA    <- Estimation$y   # data
+	QQ      <- VARmakexy(DATA,nlag,1)
+	
+	
+	## Retrieve and initialize variables 
+	invA    <- t(chol(as.matrix(summary(Estimation)$covres)))   # inverse of the A matrix
+	Fcomp   <- companionmatrix(Estimation)                      # Companion matrix
+	
+	#det     <- c_case                                           # constant and/or trends
+	F1      <- t(QQ$Ft)                                         # make comparable to notes
+	eps     <- ginv(invA) %*% t(residuals(Estimation))          # structural errors 
+	nvar    <- Estimation$K                                     # number of endogenous variables
+	nvarXeq <- nvar * nlag                                      # number of lagged endogenous per equation
+	nvar_ex <- 0                                                # number of exogenous (excluding constant and trend)
+	Y       <- QQ$Y                                             # left-hand side
+	#X       <- QQ$X[,(1+det):(nvarXeq+det)]                    # right-hand side (no exogenous)
+	nobs    <- nrow(Y)                                          # number of observations
+	
+	
+	## Compute historical decompositions
+	
+	# Contribution of each shock
+	invA_big <- matrix(0,nvarXeq,nvar)
+	invA_big[1:nvar,] <- invA
+	Icomp <- cbind(diag(nvar), matrix(0,nvar,(nlag-1)*nvar))
+	HDshock_big <- array(0, dim=c(nlag*nvar,nobs+1,nvar))
+	HDshock <- array(0, dim=c(nvar,(nobs+1),nvar))
+	
+	for (j in 1:nvar){  # for each variable
+		eps_big <- matrix(0,nvar,(nobs+1)) # matrix of shocks conformable with companion
+		eps_big[j,2:ncol(eps_big)] <- eps[j,]
+		for (i in 2:(nobs+1)){
+			HDshock_big[,i,j] <- invA_big %*% eps_big[,i] + Fcomp %*% HDshock_big[,(i-1),j]
+			HDshock[,i,j] <-  Icomp %*% HDshock_big[,i,j]
+		} 
+		
+	} 
+	
+	HD.shock <- array(0, dim=c((nobs+nlag),nvar,nvar))   # [nobs x shock x var]
+	
+	for (i in 1:nvar){
+		
+		for (j in 1:nvar){
+			HD.shock[,j,i] <- c(rep(NA,nlag), HDshock[i,(2:dim(HDshock)[2]),j])
+		}
+	}
+	
+	return(HD.shock)
+	
+}
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.align="center", fig.height=5, fig.width=8}
+dh_var <- VARhd(var2)
+
+dh_ipca_svar_dd <- dplyr::tibble(
+	"hd_ipca" = dh_var[,,1][,1],
+	"hd_br_ptr" = dh_var[,,1][,2],
+	"m" = c(0:275)) |> 
+	filter(!is.na(hd_ipca))
+
+dh_svar_plt <- plot_ly(dh_ipca_svar_dd |> dplyr::slice(1:36)
+							  , type = "bar") |> 
+	add_trace(x = ~m, y = ~hd_ipca,   name="IPCA",
+				 marker = list(color = '#009779')) |> 
+	add_trace(x = ~m, y = ~hd_br_ptr, name="Petro",
+				 marker = list(color = '#ca0028')) |> 
+	layout(title = "Decomposição da Histórica de 3 Anos do SVAR no IPCA",
+			 barmode = 'stack',
+			 xaxis = list(title = "Meses"),
+			 yaxis = list(title = "Dif(Log( IPCA ))"))
+dh_svar_plt
+
+```
+
+
+
+# Outras Referências
+
+ - Lange, A., Dalheimer, B., Herwartz, H., & Maxand, S. (2021). **svars: An R Package for Data-Driven Identification in Multivariate Time Series Analysis**. Journal of Statistical Software, 97(5), 1–34. https://doi.org/10.18637/jss.v097.i05.
+ - Pfaff, B. (2008). **VAR, SVAR and SVEC Models: Implementation Within R Package vars**. Journal of Statistical Software, 27(4), 1–32. https://doi.org/10.18637/jss.v027.i04.
+ - Enders, W. (2014) **Applied Econometric Time Series**. 4th Edition. John Wiley, New York.
+ - Kilian, Lutz and Lutkepohl,Helmut, (2017), **Structural Vector Autoregressive Analysis**, Cambridge University Press.
+ - Terasvirta, Timo.**Specification, Estimation, and Evaluation of Smooth Transition Autoregressive Models.** Journal of the American Statistical Association 89, no. 425 (1994): 208–18. https://doi.org/10.2307/2291217.
+ - Daniel Ryback. **Historical Decomposition In R.**
+
+
